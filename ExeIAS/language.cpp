@@ -82,6 +82,13 @@ string visualStudioName(const string& linker, int& major)
     }
 }
 
+string visualStudioNameOr(const string& linker)
+{
+    int major = 0;
+    string vs = visualStudioName(linker, major);
+    return vs.empty() ? "компоновщик " + linker : vs;
+}
+
 LanguageInfo detectLanguage(const PeInfo& pe, const vector<string>& data)
 {
     LanguageInfo lang;
@@ -117,6 +124,18 @@ LanguageInfo detectLanguage(const PeInfo& pe, const vector<string>& data)
             lang.confidence = 70;
             lang.evidence.push_back("сборка .NET без признаков VB.NET и F#: чаще всего это C#");
         }
+        return lang;
+    }
+
+    // --- Загрузчик apphost: сам он на C++, но программа лежит рядом в .dll и написана для .NET
+    if (hasString(data, "hostfxr") && hasString(data, "dotnet_"))
+    {
+        lang.language = ".NET (загрузчик apphost)";
+        lang.dotnet = true;
+        lang.toolchain = "пакет SDK .NET, " + visualStudioNameOr(pe.linker);
+        lang.runtime = "CLR (hostfxr, hostpolicy)";
+        lang.confidence = 85;
+        lang.evidence.push_back("строки загрузчика hostfxr: исследуется машинный код загрузчика, а не логика программы на IL");
         return lang;
     }
 
