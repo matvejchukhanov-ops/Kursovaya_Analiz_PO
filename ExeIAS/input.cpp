@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <io.h>
 #pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "user32.lib")
 #endif
 
 #include "input.h"
@@ -207,6 +208,32 @@ vector<string> listArchive(const fs::path& archive, string& error)
     return names;
 }
 
+#ifdef _WIN32
+// Снимок архива во временной папке: список и извлечение делаются по одной и той же копии,
+// архив нельзя подменить между ними. Копируется сам архив, образец из него не распаковывается
+struct ArchiveSnapshot
+{
+    fs::path path;
+    ~ArchiveSnapshot()
+    {
+        error_code ec;
+        if (!path.empty())
+            fs::remove(path, ec);
+    }
+};
+
+bool makeSnapshot(const fs::path& archive, ArchiveSnapshot& snap)
+{
+    wchar_t dir[MAX_PATH], file[MAX_PATH];
+    if (!GetTempPathW(MAX_PATH, dir) || !GetTempFileNameW(dir, L"ias", 0, file))
+        return false;
+    snap.path = fs::path(file).replace_extension(archive.extension());
+    error_code ec;
+    fs::remove(fs::path(file), ec);
+    return fs::copy_file(archive, snap.path, fs::copy_options::overwrite_existing, ec);
+}
+#endif
+
 bool readFromArchive(const fs::path& archive, const string& member, vector<unsigned char>& bytes, string& error)
 {
 #ifdef _WIN32
@@ -217,17 +244,29 @@ bool readFromArchive(const fs::path& archive, const string& member, vector<unsig
         error = "недопустимое имя файла в архиве «" + member + "» (символы шаблона); перепакуйте архив";
         return false;
     }
-    // по той же причине имя должно встречаться в архиве ровно один раз
-    vector<string> names = listArchive(archive, error);
-    if (count(names.begin(), names.end(), member) != 1)
+    ArchiveSnapshot snap;
+    if (!makeSnapshot(archive, snap))
+    {
+        error = "не удалось скопировать архив во временную папку";
+        return false;
+    }
+    // по той же причине имя должно встречаться ровно один раз, и под ним не должно быть
+    // «подкаталога»: по имени каталога tar отдаёт и всё его содержимое
+    vector<string> names = listArchive(snap.path, error);
+    bool nested = false;
+    for (const string& n : names)
+        if (n.size() > member.size() && n.compare(0, member.size(), member) == 0
+            && (n[member.size()] == '/' || n[member.size()] == '\\'))
+            nested = true;
+    if (count(names.begin(), names.end(), member) != 1 || nested)
     {
         if (error.empty())
-            error = "файл «" + member + "» не найден в архиве или встречается в нём несколько раз";
+            error = "файл «" + member + "» не найден в архиве, встречается в нём несколько раз или совпадает с именем каталога";
         return false;
     }
     fs::path tar = systemTar();
     DWORD code = 1;
-    if (!runProcess(tar, { L"-xOf", archive.wstring(), fromUtf8(member) }, bytes, code) || code != 0 || bytes.empty())
+    if (!runProcess(tar, { L"-xOf", snap.path.wstring(), fromUtf8(member) }, bytes, code) || code != 0 || bytes.empty())
     {
         error = "не удалось извлечь «" + member + "» из архива";
         return false;
@@ -331,15 +370,35 @@ vector<FoundString> extractStrings(const vector<unsigned char>& bytes, size_t mi
 
 // strings.exe ищется рядом с ExeIAS.exe и в абсолютных каталогах PATH. Текущая папка и папка
 // с образцом исключены: иначе подложенный рядом с образцом strings.exe был бы запущен
+#ifdef _WIN32
+// Каталог для сравнения: полный путь в нижнем регистре (в Windows «C:\Users» и «c:\users» — одно и то же)
+wstring dirKey(const fs::path& p)
+{
+    error_code ec;
+    wstring s = fs::weakly_canonical(fs::absolute(p, ec), ec).wstring();
+    while (s.size() > 3 && (s.back() == L'\\' || s.back() == L'/'))
+        s.pop_back();
+    if (!s.empty())
+        CharLowerBuffW(s.data(), (DWORD)s.size());
+    return s;
+}
+#endif
+
 fs::path findStringsUtility(const fs::path& selfPath, const fs::path& samplePath)
 {
 #ifdef _WIN32
     vector<fs::path> dirs;
     if (!selfPath.empty())
         dirs.push_back(selfPath.parent_path());
+    // исключаются папка образца и текущая папка — кроме случая, когда текущая папка и есть папка ИАС
+    // (запуск двойным щелчком); папка ИАС, совпавшая с папкой образца, тоже исключается
     error_code ec;
-    fs::path current = fs::weakly_canonical(fs::current_path(ec), ec);
-    fs::path sampleDir = samplePath.empty() ? fs::path() : fs::weakly_canonical(fs::absolute(samplePath, ec).parent_path(), ec);
+    set<wstring> excluded;
+    wstring current = dirKey(fs::current_path(ec));
+    if (selfPath.empty() || current != dirKey(selfPath.parent_path()))
+        excluded.insert(current);
+    if (!samplePath.empty())
+        excluded.insert(dirKey(fs::absolute(samplePath, ec).parent_path()));
     DWORD length = GetEnvironmentVariableW(L"PATH", nullptr, 0);
     if (length > 0)
     {
@@ -352,22 +411,23 @@ fs::path findStringsUtility(const fs::path& selfPath, const fs::path& samplePath
             wstring item = list.substr(start, end == wstring::npos ? wstring::npos : end - start);
             start = end == wstring::npos ? list.size() + 1 : end + 1;
             fs::path dir(item);
-            if (item.empty() || !dir.is_absolute())
-                continue;
-            fs::path canon = fs::weakly_canonical(dir, ec);
-            if (canon == current || (!sampleDir.empty() && canon == sampleDir))
-                continue;
-            dirs.push_back(dir);
+            if (!item.empty() && dir.is_absolute())
+                dirs.push_back(dir);
         }
     }
     const wchar_t* names[] = { L"strings64.exe", L"strings.exe" };
     for (const fs::path& dir : dirs)
+    {
+        // и папка самой ИАС исключается, если ExeIAS.exe лежит рядом с образцом или запущен из неё
+        if (excluded.count(dirKey(dir)))
+            continue;
         for (const wchar_t* n : names)
         {
             fs::path candidate = dir / n;
             if (fs::is_regular_file(candidate, ec))
                 return candidate;
         }
+    }
 #endif
     return fs::path();
 }
