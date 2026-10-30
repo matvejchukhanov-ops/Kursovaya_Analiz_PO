@@ -1,0 +1,29 @@
+# Сборка
+build/
+Debug/
+Release/
+x64/
+ExeIAS/Debug/
+ExeIAS/Release/
+ExeIAS/x64/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.iobj
+*.ipdb
+*.exe
+
+# Visual Studio
+.vs/
+*.user
+
+# Текст курсовой и материалы для его сборки (рисунки строятся из образца ВПО)
+*.docx
+*.pdf
+doc_tools/fig/
+doc_tools/user.asm
+
+# Образцы ВПО не хранить в репозитории
+*.rar
+*.zip
