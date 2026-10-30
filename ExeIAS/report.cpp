@@ -1,4 +1,5 @@
 #include "report.h"
+#include "economics.h"
 #include "fsanalysis.h"
 #include "pe.h"
 #include "signatures.h"
@@ -30,8 +31,13 @@ void assessRisk(Analysis& a)
     bool destroys = false;
     Severity confirmed = NONE;     // максимальная критичность, подтверждённая анализом кода
     set<string> counted;           // однотипная цепочка в нескольких функциях учитывается один раз
+    bool anyIncident = false;
     for (const Finding& f : a.findings)
     {
+        // Ошибка программиста — не признак вредоносности: она есть и в обычных программах
+        if (f.block == BLOCK_LANG)
+            continue;
+        anyIncident = true;
         bool byCode = f.source == "машинный код";
         if (!byCode || counted.insert(f.incident).second)
             score += weightOf(f.severity) * (byCode ? 2 : 1);
@@ -49,7 +55,7 @@ void assessRisk(Analysis& a)
     a.probability = a.score == 0 ? "минимальная" : a.score < 20 ? "низкая" : a.score < 45 ? "средняя"
                   : a.score < 70 ? "высокая" : "очень высокая";
 
-    if (a.findings.empty())
+    if (!anyIncident)
         a.verdict = "признаков инцидентов ИБ не обнаружено";
     else if (destroys)
         a.verdict = "файл содержит код уничтожения данных — вредоносная программа деструктивного типа (троян-вайпер); запуск недопустим";
@@ -122,6 +128,9 @@ void writeFinding(ofstream& out, size_t n, const Finding& f)
         out << "    Признак:         " << e << "\n";
     if (!f.note.empty())
         out << "    Пояснение:       " << f.note << "\n";
+    if (!f.damage.empty())
+        out << "    Ущерб:           " << f.damage << "; ожидаемо " << formatRub(f.lossExpected)
+            << " (от " << formatRub(f.lossMin) << " до " << formatRub(f.lossMax) << "), опасность: " << f.econLevel << "\n";
     out << "\n";
 }
 
@@ -369,7 +378,18 @@ void writeReport(const fs::path& path, const Analysis& a)
         out << "Версия компоновщика:  " << pe.linker << "\n";
         out << "База образа:          " << hexVa(pe.imageBase) << "\n";
         out << "Точка входа:          " << hexVa(pe.imageBase + pe.entryRva) << " (RVA " << hexVa(pe.entryRva) << ")\n";
-        out << "Оверлей:              " << (pe.overlay ? to_string(pe.overlay) + " байт" : string("нет")) << "\n\n";
+        out << "Оверлей:              " << (pe.overlay ? to_string(pe.overlay) + " байт" : string("нет")) << "\n";
+        out << "Язык:                 " << a.lang.language;
+        if (a.lang.confidence > 0)
+            out << " (уверенность " << a.lang.confidence << "%)";
+        out << "\n";
+        if (!a.lang.toolchain.empty())
+            out << "Средства сборки:      " << a.lang.toolchain << "\n";
+        if (!a.lang.runtime.empty())
+            out << "Среда выполнения:     " << a.lang.runtime << "\n";
+        for (const string& e : a.lang.evidence)
+            out << "  признак языка:      " << e << "\n";
+        out << "\n";
 
         out << "Секции:\n";
         out << "  Имя        VirtAddr    VirtSize    RawSize     Права  Энтропия\n";
@@ -418,6 +438,14 @@ void writeReport(const fs::path& path, const Analysis& a)
     if (n == 0)
         out << "  нет\n\n";
 
+    out << "Ошибки языка и компилятора (" << a.lang.language << "). На балл риска не влияют: это качество кода, а не вредоносность\n\n";
+    n = 0;
+    for (const Finding& f : a.findings)
+        if (f.block == BLOCK_LANG)
+            writeFinding(out, ++n, f);
+    if (n == 0)
+        out << "  нет\n\n";
+
     // ---------- 3. Индикаторы компрометации
     out << "================ 3. ИНДИКАТОРЫ КОМПРОМЕТАЦИИ (IOC) ================\n";
     n = 0;
@@ -433,7 +461,8 @@ void writeReport(const fs::path& path, const Analysis& a)
     // ---------- 5. Оценка риска
     size_t bySeverity[5] = { 0 };
     for (const Finding& f : a.findings)
-        bySeverity[f.severity]++;
+        if (f.block != BLOCK_LANG)
+            bySeverity[f.severity]++;
     out << "================ 5. ОЦЕНКА РИСКА ================\n";
     out << "CRITICAL: " << bySeverity[CRITICAL] << "   HIGH: " << bySeverity[HIGH] << "   MEDIUM: " << bySeverity[MEDIUM]
         << "   LOW: " << bySeverity[LOW] << "\n";
@@ -441,6 +470,18 @@ void writeReport(const fs::path& path, const Analysis& a)
     out << "Балл риска:                       " << a.score << " / 100\n";
     out << "Вероятность инцидента ИБ:         " << a.probability << "\n";
     out << "Вывод: " << a.verdict << "\n\n";
+
+    out << "Экономическая опасность:          " << a.economy.level << "\n";
+    out << "Профиль организации:              " << a.profile.name << " (" << a.profile.source << ")\n";
+    if (a.economy.lossExpected > 0)
+    {
+        out << "Ущерб за один инцидент:           ожидаемо " << formatRub(a.economy.lossExpected) << ", от "
+            << formatRub(a.economy.lossMin) << " до " << formatRub(a.economy.lossMax) << "\n";
+        for (const string& line : a.economy.breakdown)
+            out << "  - " << line << "\n";
+        out << "Это модельная оценка по параметрам профиля, а не прогноз фактических потерь\n";
+    }
+    out << "\n";
 
     // ---------- 6. Рекомендации
     out << "================ 6. РЕКОМЕНДАЦИИ ================\n";
@@ -469,7 +510,7 @@ bool writeCsv(const fs::path& path, const vector<Finding>& findings)
     if (!csv.is_open())
         return false;
     csv << "\xEF\xBB\xBF";   // BOM — Excel откроет кириллицу без перекодировки
-    csv << "№;Блок;Категория;Сигнатура;CWE;MITRE ATT&CK;Тип инцидента;Критичность;CVE;CVSS;Источник;Признак;Рекомендация\n";
+    csv << "№;Блок;Категория;Сигнатура;CWE;MITRE ATT&CK;Тип инцидента;Критичность;CVE;CVSS;Источник;Признак;Рекомендация;Вид ущерба;Ущерб мин., руб.;Ущерб макс., руб.;Ущерб ожидаемый, руб.\n";
     for (size_t i = 0; i < findings.size(); i++)
     {
         const Finding& f = findings[i];
@@ -478,7 +519,8 @@ bool writeCsv(const fs::path& path, const vector<Finding>& findings)
             << orDash(f.cwe) << ";" << orDash(f.attack) << ";"
             << csvField(f.incident) << ";" << severityName(f.severity) << ";" << orDash(f.cve) << ";"
             << formatCvss(f.cvss) << ";" << csvField(f.source) << ";" << csvField(f.examples.empty() ? "" : f.examples[0]) << ";"
-            << csvField(f.recommendation) << "\n";
+            << csvField(f.recommendation) << ";" << orDash(f.damage) << ";"
+            << (long long)f.lossMin << ";" << (long long)f.lossMax << ";" << (long long)f.lossExpected << "\n";
     }
     return true;
 }

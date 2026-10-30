@@ -10,6 +10,7 @@
 #endif
 
 #include "console.h"
+#include "economics.h"
 #include "input.h"
 #include "pe.h"
 #include "pipeline.h"
@@ -68,9 +69,9 @@ string withSpaces(size_t n)
 
 void printSummary(const Analysis& a, const fs::path& reportFile)
 {
-    size_t vuln = 0, ioc = 0, fsCount = 0;
+    size_t vuln = 0, ioc = 0, fsCount = 0, langCount = 0;
     for (const Finding& f : a.findings)
-        (f.block == BLOCK_VULN ? vuln : f.block == BLOCK_IOC ? ioc : fsCount)++;
+        (f.block == BLOCK_VULN ? vuln : f.block == BLOCK_IOC ? ioc : f.block == BLOCK_LANG ? langCount : fsCount)++;
 
     cout << "\n";
     rule();
@@ -87,13 +88,27 @@ void printSummary(const Analysis& a, const fs::path& reportFile)
         cout << "функций " << a.code.functions.size() << ", вызовов с восстановленными аргументами "
              << a.code.resolvedCalls << "\n";
     }
+    if (a.pe.valid)
+    {
+        say(" Язык:       ", CYAN);
+        cout << a.lang.language;
+        if (!a.lang.toolchain.empty())
+            cout << ", " << a.lang.toolchain;
+        cout << "\n";
+    }
     say(" Находки:    ", CYAN);
-    cout << "уязвимости " << vuln << "  ·  индикаторы компрометации " << ioc << "  ·  файловая система " << fsCount << "\n";
+    cout << "уязвимости " << vuln << "  ·  индикаторы компрометации " << ioc << "  ·  файловая система " << fsCount
+         << "  ·  ошибки языка " << langCount << "\n";
     say(" РИСК:       ", CYAN);
     say(severityName(a.overall) + "   " + to_string(a.score) + "/100", severityColor(a.overall));
     cout << "   вероятность инцидента: ";
     say(a.probability + "\n", severityColor(a.overall));
     say(" Вывод:      ", CYAN); say(a.verdict + "\n", WHITE);
+    say(" Ущерб:      ", CYAN);
+    cout << a.economy.level;
+    if (a.economy.lossExpected > 0)
+        cout << ", ожидаемо " << formatRub(a.economy.lossExpected) << " за инцидент (" << a.profile.source << ")";
+    cout << "\n";
 
     if (!a.behaviors.empty())
     {

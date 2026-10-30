@@ -68,6 +68,16 @@ struct PeInfo
     DataDir dirs[16];
     vector<Section> sections;
     vector<ImportDll> imports;
+
+    // Защиты компилятора из IMAGE_LOAD_CONFIG_DIRECTORY
+    bool hasLoadConfig = false;
+    bool stackCookie = false;     // /GS — защита стека от переполнения
+    bool safeSeh = false;         // /SAFESEH — таблица обработчиков исключений (x86)
+    bool controlFlowGuard = false;
+
+    // Заголовок Rich: инструменты Microsoft, которыми собран файл (prodid, build, count)
+    struct RichEntry { uint16_t prodId, build; uint32_t count; };
+    vector<RichEntry> rich;
 };
 
 // ---------------------------------------------------------------- анализ машинного кода
@@ -111,11 +121,20 @@ struct CallSite
     bool argsKnown;       // число аргументов известно (прототип или add esp после вызова)
 };
 
+// Ошибка программиста, найденная в машинном коде (CWE-252, CWE-120, CWE-835, CWE-674)
+struct CodeIssue
+{
+    string cwe;
+    uint64_t addr;
+    string text;
+};
+
 struct FunctionInfo
 {
     uint64_t start = 0;
     vector<CodeRef> refs;
     vector<CallSite> calls;
+    vector<CodeIssue> issues;
     bool decoded = false;        // инструкции функции разобраны декодером
     set<uint64_t> callees;
     bool recursive = false;
@@ -164,6 +183,47 @@ struct Finding
     string source;          // таблица импорта / строки / машинный код / заголовки PE
     size_t hits;
     vector<string> examples;
+
+    // Экономическая опасность (модуль economics)
+    string damage;          // вид ущерба: потеря данных, простой, расследование и т.д.
+    double lossMin = 0, lossMax = 0, lossExpected = 0;   // руб. за один инцидент
+    string econLevel;       // низкая / средняя / высокая / критическая
+};
+
+// Язык программирования и средства сборки исследуемого файла
+struct LanguageInfo
+{
+    string language = "не определён";
+    string toolchain;           // компилятор / среда
+    string runtime;             // библиотека времени выполнения
+    int confidence = 0;         // уверенность, %
+    bool cpp = false, dotnet = false, legacy = false;
+    vector<string> evidence;
+};
+
+// Параметры организации для оценки ущерба (economics.ini рядом с ExeIAS.exe)
+struct EconomicProfile
+{
+    string name = "малая организация, 20 рабочих мест";
+    double workstations = 20;          // рабочих мест в организации
+    double hourCost = 2000;            // руб.: потери за 1 час простоя одного рабочего места
+    double specialistHour = 2500;      // руб.: час работы специалиста ИТ / ИБ
+    double hostRebuildHours = 8;       // ч: переустановка и настройка одного узла
+    double investigationHours = 40;    // ч: расследование инцидента
+    double dataValue = 500000;         // руб.: воссоздание данных одного узла без резервной копии
+    double sharedDataValue = 2000000;  // руб.: данные в сетевых папках организации
+    double backupShare = 0.7;          // доля данных, восстанавливаемых из резервных копий
+    double leakFineMin = 3000000;      // руб.: штраф за утечку персональных данных (ст. 13.11 КоАП РФ)
+    double leakFineMax = 5000000;
+    string source = "значения по умолчанию";
+};
+
+// Итоговая экономическая оценка: по каждому виду ущерба берётся наихудшая находка
+struct EconomicSummary
+{
+    double lossMin = 0, lossMax = 0, lossExpected = 0;
+    string level = "нет";
+    vector<string> breakdown;
 };
 
 struct Library
@@ -191,7 +251,10 @@ struct Analysis
     vector<string> context;
     CodeMap code;
     vector<Behavior> behaviors;
+    LanguageInfo lang;
     vector<Finding> findings;
+    EconomicProfile profile;
+    EconomicSummary economy;
     int score = 0;
     string probability;
     Severity overall = NONE;

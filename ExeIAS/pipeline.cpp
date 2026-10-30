@@ -7,8 +7,10 @@
 #endif
 
 #include "pipeline.h"
+#include "economics.h"
 #include "fsanalysis.h"
 #include "input.h"
+#include "language.h"
 #include "pe.h"
 #include "report.h"
 #include "signatures.h"
@@ -84,13 +86,20 @@ void runAnalysis(const vector<unsigned char>& bytes, const RunOptions& options, 
     append(behaviorFindings(a.behaviors));
     append(importOnlyFsFindings(a.pe, !a.behaviors.empty()));
 
-    // 5. Контекст происхождения и оценка риска
+    // 5. Язык программирования и ошибки в коде
+    a.lang = detectLanguage(a.pe, a.data);
+    append(languageFindings(a.lang, a.pe, a.data, a.code));
+
+    // 6. Контекст происхождения, оценка риска и экономической опасности
     a.context = applyContext(a.data, a.findings);
     stable_sort(a.findings.begin(), a.findings.end(),
                 [](const Finding& x, const Finding& y) { return x.severity > y.severity; });
     assessRisk(a);
+    if (!options.selfPath.empty())
+        a.profile = loadProfile(options.selfPath.parent_path() / L"economics.ini");
+    assessEconomics(a);
 
-    // 6. Отчёт
+    // 7. Отчёт
     writeReport(files.report, a);
     writeCsv(files.csv, a.findings);
 }

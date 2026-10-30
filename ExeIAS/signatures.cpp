@@ -10,6 +10,7 @@
 const string BLOCK_VULN = "Признаки уязвимостей";
 const string BLOCK_IOC = "Индикаторы компрометации";
 const string BLOCK_FS = "Взаимодействие с файловой системой";
+const string BLOCK_LANG = "Ошибки языка и компилятора";
 
 // Категории сигнатур расширенной матрицы
 const string CAT_ERROR = "Ошибка / исключение";

@@ -166,7 +166,29 @@ const vector<ApiProto> PROTOS = {
     { "GetActiveWindow", {} },
     { "GetLastActivePopup", { A_ANY } },
     { "wsprintf", { A_ANY, A_STR }, true },
+    { "lstrcpy", { A_ANY, A_STR } },
+    { "lstrcat", { A_ANY, A_STR } },
 };
+
+// Функции, результат которых нельзя игнорировать: при ошибке программа работает с пустым
+// описателем или считает невыполненную операцию выполненной (CWE-252)
+const vector<string> MUST_CHECK = {
+    "CreateFile", "CopyFile", "CopyFileEx", "MoveFile", "MoveFileEx", "DeleteFile", "WriteFile", "ReadFile",
+    "RegCreateKey", "RegCreateKeyEx", "RegOpenKey", "RegOpenKeyEx", "RegSetValueEx", "RegQueryValueEx",
+    "VirtualAlloc", "HeapAlloc", "LoadLibrary", "LoadLibraryEx", "GetProcAddress", "CreateProcess",
+    "OpenProcess", "CreateThread", "malloc", "calloc", "realloc", "fopen",
+};
+
+// Копирование строки без указания размера приёмника (CWE-120)
+const vector<string> UNBOUNDED_COPY = { "strcpy", "strcat", "wcscpy", "wcscat", "lstrcpy", "lstrcat" };
+
+bool inList(const string& name, const vector<string>& stems)
+{
+    for (const string& s : stems)
+        if (apiMatches(name, s))
+            return true;
+    return false;
+}
 
 const ApiProto* findProto(const string& name)
 {
@@ -460,6 +482,7 @@ private:
     int64_t frameDepth = 0;
     map<int64_t, Value> slots;      // ячейки кадра: позиция -> значение
     map<int64_t, string> buffers;   // содержимое буферов в стеке: позиция -> текст
+    set<int64_t> flaggedBuffers;    // о переполнении этого буфера уже сообщено
 
     // Состояние в точке перехода: туда возвращаемся после ret/jmp
     struct BranchState
@@ -806,6 +829,142 @@ private:
         return hive + "\\" + textOf(subkey);
     }
 
+    // ---------------------------------------------------- ошибки программиста в коде
+
+    void addIssue(const string& cwe, uint64_t addr, const string& text)
+    {
+        f.issues.push_back({ cwe, addr, text });
+    }
+
+    // Проверяется ли результат вызова до того, как он потерян или использован.
+    // Сомнительные случаи (ret, переход, запись в память) считаем проверенными: лучше пропустить,
+    // чем приписать программе ошибку, которой нет
+    bool resultChecked(size_t idx)
+    {
+        set<int> tracked = { R_AX };
+        bool passedOn = false;     // значение уже передано дальше без проверки
+        auto holds = [&](int r) { return tracked.count(r) > 0; };
+        for (size_t j = idx + 1; j < code.size() && j <= idx + 16; j++)
+        {
+            const Insn& c = code[j];
+            if (c.twoByte)
+            {
+                if (c.op >= 0x80 && c.op <= 0x8F)
+                    return true;
+                continue;
+            }
+            const uint8_t op = c.op;
+            bool reg3 = c.hasModrm && c.mod == 3;
+            if ((op == 0x85 || op == 0x84) && reg3 && (holds(c.reg) || holds(c.rm)))
+                return true;                                         // test r, r
+            if ((op == 0x0B || op == 0x09 || op == 0x23 || op == 0x21) && reg3 && c.reg == c.rm && holds(c.reg))
+                return true;                                         // or r, r / and r, r
+            if ((op == 0x83 || op == 0x81 || op == 0x80) && c.regRaw == 7 && reg3 && holds(c.rm))
+                return true;                                         // cmp r, imm
+            if ((op == 0x3D || op == 0x3C) && holds(R_AX))
+                return true;                                         // cmp eax, imm
+            if ((op == 0x3B || op == 0x39 || op == 0x38 || op == 0x3A) && reg3 && (holds(c.reg) || holds(c.rm)))
+                return true;                                         // cmp r, r
+            if (op == 0xF7 && c.regRaw == 3 && reg3 && holds(c.rm))
+                return true;                                         // neg eax / sbb — приведение к bool
+            if (op == 0x89 && !reg3 && c.hasModrm && holds(c.reg))
+                return true;                                         // сохранён в память, проверка может быть позже
+            if (op == 0xC3 || op == 0xC2 || op == 0xE9 || op == 0xEB || (op == 0xFF && c.regRaw == 4) || c.relBranch && op != 0xE8)
+                return true;                                         // возвращён вызывающему или ушёл по переходу
+
+            if (op == 0xE8 || (op == 0xFF && (c.regRaw == 2 || c.regRaw == 3)))
+            {
+                if (passedOn)
+                    return false;                                    // передан в другой вызов без проверки
+                static const int argRegs[] = { R_CX, R_DX, 8, 9 };
+                if (is64())
+                    for (int r : argRegs)
+                        if (holds(r))
+                            return false;
+                for (int r : { (int)R_AX, (int)R_CX, (int)R_DX, 8, 9, 10, 11 })
+                    tracked.erase(r);                                // вызов портит эти регистры
+                if (tracked.empty())
+                    return false;
+                continue;
+            }
+            if (op >= 0x50 && op <= 0x57 && holds((op & 7) | (c.rexB << 3)))
+            {
+                passedOn = true;                                     // push результата как аргумента
+                continue;
+            }
+            if (op == 0xFF && c.regRaw == 6 && reg3 && holds(c.rm))
+            {
+                passedOn = true;
+                continue;
+            }
+            if (op == 0x8B && reg3 && holds(c.rm))
+            {
+                tracked.insert(c.reg);                               // mov esi, eax — следим и за копией
+                continue;
+            }
+            if (op == 0x89 && reg3 && holds(c.reg))
+            {
+                tracked.insert(c.rm);
+                continue;
+            }
+            // регистр с результатом перезаписан
+            int dst = -1;
+            if ((op == 0x8B || op == 0x8D || op == 0x8A) && c.hasModrm)
+                dst = c.reg;
+            else if ((op == 0x33 || op == 0x2B || op == 0x31 || op == 0x29) && reg3 && c.reg == c.rm)
+                dst = c.reg;
+            else if (op >= 0xB8 && op <= 0xBF)
+                dst = (op & 7) | (c.rexB << 3);
+            else if (op >= 0x58 && op <= 0x5F)
+                dst = (op & 7) | (c.rexB << 3);
+            else if (op == 0xA1)
+                dst = R_AX;
+            if (dst >= 0)
+            {
+                tracked.erase(dst);
+                if (tracked.empty())
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    // Строка из формата %s без ограничения точности и не из образа — длина заранее неизвестна
+    bool unboundedPrintf(const vector<Value>& args)
+    {
+        const string& fmt = args[1].text;
+        size_t next = 2;
+        for (size_t i = 0; i + 1 < fmt.length(); i++)
+        {
+            if (fmt[i] != '%')
+                continue;
+            size_t k = i + 1;
+            if (fmt[k] == '%')
+            {
+                i = k;
+                continue;
+            }
+            bool precision = false;
+            while (k < fmt.length() && strchr("0123456789.-+l", fmt[k]))
+            {
+                if (fmt[k] == '.')
+                    precision = true;
+                k++;
+            }
+            if (k < fmt.length() && fmt[k] == 's' && !precision && next < args.size() && args[next].kind != V_STRING)
+                return true;
+            next++;
+            i = k;
+        }
+        return false;
+    }
+
+    void noteUnboundedCopy(uint64_t addr, const Value& dst, const string& how)
+    {
+        if (flaggedBuffers.insert(dst.num).second)
+            addIssue("CWE-120", addr, how + " в буфер " + dst.text + " без проверки размера");
+    }
+
     void apiCall(const string& name, size_t idx)
     {
         CallSite cs = { code[idx].addr, name, true, 0, {}, false };
@@ -861,6 +1020,15 @@ private:
                 buffers.erase(cs.args[i].num);
                 slots.erase(cs.args[i].num);
             }
+        if (inList(name, MUST_CHECK) && !resultChecked(idx))
+            addIssue("CWE-252", cs.addr, "результат " + name + " не проверяется");
+        if (cs.argsKnown && cs.args.size() >= 2 && cs.args[0].kind == V_LOCAL)
+        {
+            if (inList(name, UNBOUNDED_COPY) && cs.args[1].kind != V_STRING)
+                noteUnboundedCopy(cs.addr, cs.args[0], name + ": строка неизвестной длины копируется");
+            if (apiMatches(name, "wsprintf") && cs.args[1].kind == V_STRING && unboundedPrintf(cs.args))
+                noteUnboundedCopy(cs.addr, cs.args[0], name + ": строка неизвестной длины записывается");
+        }
         applyOutputs(cs);
         f.calls.push_back(cs);
     }
@@ -915,13 +1083,21 @@ private:
         // sprintf-подобная функция: (буфер, "формат", ...)
         if (cs.args.size() >= 2 && cs.args[0].kind == V_LOCAL && cs.args[1].kind == V_STRING
             && cs.args[1].text.find('%') != NPOS)
+        {
+            if (unboundedPrintf(cs.args))
+                noteUnboundedCopy(cs.addr, cs.args[0], "sprintf: строка неизвестной длины записывается");
             buffers[cs.args[0].num] = formatPrintf(cs.args);
+        }
         clobberVolatile();
         // fopen-подобная функция: (путь, "w") — результат запоминаем как FILE* этого файла
         static const set<string> modes = { "r", "w", "a", "rb", "wb", "ab", "r+", "w+", "a+", "wt", "rt" };
         if (cs.args.size() == 2 && cs.args[1].kind == V_STRING && modes.count(cs.args[1].text)
             && (cs.args[0].kind == V_STRING || cs.args[0].kind == V_LOCAL))
+        {
             regs[R_AX] = symbol("FILE*(" + textOf(cs.args[0]) + ")");
+            if (!resultChecked(idx))
+                addIssue("CWE-252", cs.addr, "результат fopen(" + textOf(cs.args[0]) + ") не проверяется");
+        }
         f.calls.push_back(cs);
     }
 
@@ -931,7 +1107,7 @@ private:
     }
 
     // rep movs: копирование строки (strcpy) или дописывание в конец (strcat)
-    void copyString()
+    void copyString(size_t idx)
     {
         const Value& dst = regs[R_DI];
         const Value& src = regs[R_SI];
@@ -940,6 +1116,22 @@ private:
             string text = src.kind == V_LOCAL ? bufferText(src.num) : textOf(src);
             if (src.kind == V_LOCAL && text.empty())
                 text = "<" + src.text + ">";
+
+            // длина источника неизвестна и перед копированием нет сравнения: встроенный strcpy / strcat
+            if (src.kind != V_STRING && text.find('<') != NPOS)
+            {
+                bool lengthChecked = false;
+                for (size_t back = idx > 16 ? idx - 16 : 0; back < idx; back++)
+                {
+                    const Insn& c = code[back];
+                    if (!c.twoByte && c.hasModrm && c.mod == 3
+                        && (((c.op == 0x83 || c.op == 0x81) && c.regRaw == 7) || c.op == 0x3B || c.op == 0x39))
+                        lengthChecked = true;
+                }
+                if (!lengthChecked)
+                    noteUnboundedCopy(code[idx].addr, dst, string(dst.atEnd ? "strcat" : "strcpy")
+                                      + ": строка неизвестной длины копируется");
+            }
             if (dst.atEnd)
                 buffers[dst.num] += text;
             else
@@ -1252,7 +1444,7 @@ private:
         case 0xA4: case 0xA5:
             if (in.rep)
             {
-                copyString();
+                copyString(idx);
                 unknown(R_CX);
             }
             unknown(R_SI);
@@ -1393,6 +1585,41 @@ bool looksLikePrologue(const vector<unsigned char>& b, size_t o, bool is64)
             || (c0 == 0x8B && c1 == 0xFF) || (c0 == 0x6A && c2 == 0x68);
     return (c0 == 0x48 && (c1 == 0x83 || c1 == 0x81) && c2 == 0xEC) || (c0 == 0x48 && c1 == 0x89 && c2 == 0x5C)
         || (c0 == 0x40 && c1 >= 0x53 && c1 <= 0x57) || (c0 == 0x4C && c1 == 0x8B && c2 == 0xDC);
+}
+
+// Цикл без выхода (CWE-835): безусловный переход назад, а внутри ни перехода наружу, ни ret,
+// ни вызова завершения процесса. Рекурсия (CWE-674) отмечается здесь же
+void findEndlessLoops(FunctionInfo& f, const vector<Insn>& code)
+{
+    set<uint64_t> starts;
+    for (const Insn& c : code)
+        starts.insert(c.addr);
+
+    for (const Insn& in : code)
+    {
+        if (in.twoByte || (in.op != 0xE9 && in.op != 0xEB) || in.target > in.addr || !starts.count(in.target))
+            continue;
+        bool hasExit = false;
+        for (const Insn& c : code)
+        {
+            if (c.addr < in.target || c.addr >= in.addr)
+                continue;
+            bool isCall = !c.twoByte && c.op == 0xE8;
+            if (c.relBranch && !isCall && (c.target < in.target || c.target > in.addr))
+                hasExit = true;
+            if (!c.twoByte && (c.op == 0xC3 || c.op == 0xC2 || (c.op == 0xFF && (c.regRaw == 4 || c.regRaw == 5))))
+                hasExit = true;
+        }
+        for (const CallSite& c : f.calls)
+            if (c.addr >= in.target && c.addr < in.addr && c.isApi
+                && (apiMatches(c.target, "ExitProcess") || apiMatches(c.target, "TerminateProcess") || apiMatches(c.target, "ExitThread")))
+                hasExit = true;
+        if (!hasExit)
+            f.issues.push_back({ "CWE-835", in.addr, "цикл " + hexVa(in.target) + "–" + hexVa(in.addr) + " не имеет условия выхода" });
+    }
+
+    if (f.recursive)
+        f.issues.push_back({ "CWE-674", f.start, "функция sub_" + hexPlain(f.start) + " вызывает сама себя, глубину ограничивают только входные данные" });
 }
 
 CodeMap analyzeCode(const vector<unsigned char>& b, const PeInfo& pe, const vector<FoundString>& strs)
@@ -1603,6 +1830,7 @@ CodeMap analyzeCode(const vector<unsigned char>& b, const PeInfo& pe, const vect
             FunctionSimulator sim(ctx, f, d->second);
             sim.run();
             f.decoded = true;
+            findEndlessLoops(f, d->second);
             cm.decodedFunctions++;
             for (const CallSite& c : f.calls)
                 if (c.argsKnown)

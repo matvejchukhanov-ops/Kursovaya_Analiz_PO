@@ -139,7 +139,9 @@
     <ClCompile Include="console.cpp" />
     <ClCompile Include="disasm.cpp" />
     <ClCompile Include="fsanalysis.cpp" />
+    <ClCompile Include="economics.cpp" />
     <ClCompile Include="input.cpp" />
+    <ClCompile Include="language.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="pe.cpp" />
     <ClCompile Include="pipeline.cpp" />
@@ -151,7 +153,9 @@
     <ClInclude Include="console.h" />
     <ClInclude Include="disasm.h" />
     <ClInclude Include="fsanalysis.h" />
+    <ClInclude Include="economics.h" />
     <ClInclude Include="input.h" />
+    <ClInclude Include="language.h" />
     <ClInclude Include="pe.h" />
     <ClInclude Include="pipeline.h" />
     <ClInclude Include="report.h" />

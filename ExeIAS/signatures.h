@@ -8,6 +8,7 @@
 extern const string BLOCK_VULN;
 extern const string BLOCK_IOC;
 extern const string BLOCK_FS;
+extern const string BLOCK_LANG;
 
 Metadata collectMetadata(const vector<string>& data);
 vector<string> collectErrors(const vector<string>& data);

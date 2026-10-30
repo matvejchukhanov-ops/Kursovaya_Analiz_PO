@@ -126,6 +126,54 @@ void parseImports(const vector<unsigned char>& b, PeInfo& pe)
     }
 }
 
+// IMAGE_LOAD_CONFIG_DIRECTORY: SecurityCookie (/GS), SEHandlerTable (/SAFESEH), GuardFlags (/guard:cf)
+void parseLoadConfig(const vector<unsigned char>& b, PeInfo& pe)
+{
+    size_t off = rvaToOffset(pe, pe.dirs[10].va);
+    if (!pe.dirs[10].va || off == NPOS)
+        return;
+    uint32_t size = rd32(b, off);
+    pe.hasLoadConfig = size > 0;
+    if (pe.is64)
+    {
+        if (size >= 0x60) pe.stackCookie = rd64(b, off + 0x58) != 0;
+        if (size >= 0x94) pe.controlFlowGuard = (rd32(b, off + 0x90) & 0x100) != 0;
+    }
+    else
+    {
+        if (size >= 0x40) pe.stackCookie = rd32(b, off + 0x3C) != 0;
+        if (size >= 0x48) pe.safeSeh = rd32(b, off + 0x40) != 0 && rd32(b, off + 0x44) != 0;
+        if (size >= 0x5C) pe.controlFlowGuard = (rd32(b, off + 0x58) & 0x100) != 0;
+    }
+}
+
+// Заголовок Rich между DOS-заглушкой и PE: записи «инструмент — номер сборки — сколько объектов»,
+// зашифрованные XOR с ключом после слова «Rich»
+void parseRich(const vector<unsigned char>& b, PeInfo& pe, uint32_t ntOffset)
+{
+    for (size_t r = 0x80; r + 8 <= ntOffset && r + 8 <= b.size(); r += 4)
+    {
+        if (rd32(b, r) != 0x68636952)          // "Rich"
+            continue;
+        uint32_t key = rd32(b, r + 4);
+        size_t dans = NPOS;
+        for (size_t s = r; s >= 0x80 && s + 4 <= b.size(); s -= 4)
+            if ((rd32(b, s) ^ key) == 0x536E6144)   // "DanS"
+            {
+                dans = s;
+                break;
+            }
+        if (dans == NPOS)
+            return;
+        for (size_t e = dans + 16; e + 8 <= r; e += 8)
+        {
+            uint32_t comp = rd32(b, e) ^ key, count = rd32(b, e + 4) ^ key;
+            pe.rich.push_back({ (uint16_t)(comp >> 16), (uint16_t)(comp & 0xFFFF), count });
+        }
+        return;
+    }
+}
+
 PeInfo parsePe(const vector<unsigned char>& b)
 {
     PeInfo pe;
@@ -192,6 +240,8 @@ PeInfo parsePe(const vector<unsigned char>& b)
     pe.overlay = b.size() > end ? b.size() - end : 0;
     pe.isDotNet = pe.dirs[14].va != 0;
     parseImports(b, pe);
+    parseLoadConfig(b, pe);
+    parseRich(b, pe, nt);
     pe.valid = true;
     return pe;
 }
