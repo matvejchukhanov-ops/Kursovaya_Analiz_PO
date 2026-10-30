@@ -238,6 +238,8 @@ vector<string> normalizeStrings(const vector<string>& raw, size_t& meaningful)
         string cleaned = cleanLine(line);
         if (!isMeaningful(cleaned))
             continue;
+        if (cleaned.length() > MAX_LINE)
+            cleaned.resize(MAX_LINE);
         meaningful++;
         if (seen.insert(cleaned).second)
             data.push_back(cleaned);

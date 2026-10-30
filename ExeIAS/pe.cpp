@@ -41,14 +41,15 @@ double entropy(const vector<unsigned char>& b, size_t from, size_t to)
 size_t rvaToOffset(const PeInfo& pe, uint64_t rva)
 {
     if (rva < pe.sizeOfHeaders)
-        return (size_t)rva;
+        return rva < pe.fileSize ? (size_t)rva : NPOS;
     for (const Section& s : pe.sections)
     {
         uint32_t size = max(s.vsize, s.rawSize);
         if (rva >= s.va && rva < (uint64_t)s.va + size)
         {
+            // заголовок секции может указывать за конец файла (испорченный или специально собранный PE)
             size_t off = s.rawPtr + (size_t)(rva - s.va);
-            return off < (size_t)s.rawPtr + s.rawSize ? off : NPOS;
+            return off < (size_t)s.rawPtr + s.rawSize && off < pe.fileSize ? off : NPOS;
         }
     }
     return NPOS;
@@ -61,6 +62,8 @@ size_t vaToOffset(const PeInfo& pe, uint64_t va)
 
 uint64_t offsetToVa(const PeInfo& pe, size_t off)
 {
+    if (off >= pe.fileSize)
+        return 0;
     for (const Section& s : pe.sections)
         if (off >= s.rawPtr && off < (size_t)s.rawPtr + s.rawSize)
             return pe.imageBase + s.va + (off - s.rawPtr);
@@ -126,6 +129,7 @@ void parseImports(const vector<unsigned char>& b, PeInfo& pe)
 PeInfo parsePe(const vector<unsigned char>& b)
 {
     PeInfo pe;
+    pe.fileSize = b.size();
     if (!isPeFile(b) || b.size() < 0x40)
     {
         pe.error = "нет сигнатуры MZ — файл не является исполняемым PE, анализируются только строки";

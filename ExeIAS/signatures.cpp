@@ -565,6 +565,8 @@ vector<Finding> matchPaths(const vector<FoundString>& all)
     roots.hits = names.hits = 0;
     for (const FoundString& s : all)
     {
+        if (s.text.length() > 260)      // длиннее MAX_PATH — не путь; regex на огромных строках не запускаем
+            continue;
         if (isRootFilePath(s.text))
         {
             roots.hits++;

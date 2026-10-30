@@ -3,7 +3,6 @@
 #include "pe.h"
 
 #include <cstring>
-#include <regex>
 
 // ================================================================ операции с ФС
 
@@ -1521,7 +1520,7 @@ CodeMap analyzeCode(const vector<unsigned char>& b, const PeInfo& pe, const vect
             continue;
         size_t off = vaToOffset(pe, target);
         const Section* sec = sectionOfVa(pe, target);
-        if (off == NPOS || !sec)
+        if (off == NPOS || off >= b.size() || !sec)
             continue;
         bool sectionStart = target == pe.imageBase + sec->va;
         unsigned char prev = off > 0 ? b[off - 1] : 0x90;
@@ -1703,10 +1702,15 @@ string findString(const FunctionInfo& f, const string& lowerSub)
     return "";
 }
 
+// Путь к файлу в корне диска: «c:\wxp». Без std::regex — строка приходит из исследуемого файла
 bool isRootFilePath(const string& s)
 {
-    static const regex root("^[A-Za-z]:\\\\[^\\\\ ]+$");
-    return regex_match(s, root);
+    if (s.length() < 4 || s.length() > 260 || !isalpha((unsigned char)s[0]) || s[1] != ':' || s[2] != '\\')
+        return false;
+    for (size_t i = 3; i < s.length(); i++)
+        if (s[i] == '\\' || s[i] == ' ')
+            return false;
+    return true;
 }
 
 bool isDriveString(const string& s)

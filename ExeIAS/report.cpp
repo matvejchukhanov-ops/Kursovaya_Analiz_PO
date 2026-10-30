@@ -3,6 +3,7 @@
 #include "pe.h"
 #include "signatures.h"
 
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -74,12 +75,19 @@ string formatCvss(double cvss)
     return ss.str();
 }
 
+// Поле CSV: в кавычках, кавычки удваиваются. Строки из исследуемого файла вида «=HYPERLINK(...)»
+// получают апостроф, чтобы Excel не выполнил их как формулу
 string csvField(string s)
 {
     for (size_t i = 0; i < s.length(); i++)
-        if (s[i] == ';' || s[i] == '\n')
-            s[i] = ',';
-    return s;
+        if (s[i] == '\n' || s[i] == '\r')
+            s[i] = ' ';
+    if (!s.empty() && strchr("=+-@\t", s[0]))
+        s = "'" + s;
+    string out = "\"";
+    for (char c : s)
+        out += c == '"' ? string("\"\"") : string(1, c);
+    return out + "\"";
 }
 
 void writeList(ofstream& out, const string& title, const vector<string>& items, size_t limit = 15)
@@ -461,10 +469,11 @@ bool writeCsv(const string& path, const vector<Finding>& findings)
     for (size_t i = 0; i < findings.size(); i++)
     {
         const Finding& f = findings[i];
-        csv << i + 1 << ";" << f.block << ";" << f.category << ";" << csvField(f.signature) << ";"
-            << (f.cwe.empty() ? "-" : f.cwe) << ";" << (f.attack.empty() ? "-" : f.attack) << ";"
-            << csvField(f.incident) << ";" << severityName(f.severity) << ";" << (f.cve.empty() ? "-" : f.cve) << ";"
-            << formatCvss(f.cvss) << ";" << f.source << ";" << csvField(f.examples.empty() ? "" : f.examples[0]) << ";"
+        auto orDash = [](const string& s) { return s.empty() ? string("-") : csvField(s); };
+        csv << i + 1 << ";" << csvField(f.block) << ";" << csvField(f.category) << ";" << csvField(f.signature) << ";"
+            << orDash(f.cwe) << ";" << orDash(f.attack) << ";"
+            << csvField(f.incident) << ";" << severityName(f.severity) << ";" << orDash(f.cve) << ";"
+            << formatCvss(f.cvss) << ";" << csvField(f.source) << ";" << csvField(f.examples.empty() ? "" : f.examples[0]) << ";"
             << csvField(f.recommendation) << "\n";
     }
     return true;

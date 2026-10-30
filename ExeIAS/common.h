@@ -12,6 +12,7 @@ using namespace std;
 
 const size_t MIN_LENGTH = 4;          // минимальная длина строки, как у strings.exe
 const size_t MAX_EXAMPLES = 3;        // сколько строк-примеров показывать в находке
+const size_t MAX_LINE = 512;          // длиннее строки обрезаются: std::regex на огромной строке уходит в глубокую рекурсию
 const size_t NPOS = string::npos;
 
 enum Severity { NONE = 0, LOW, MEDIUM, HIGH, CRITICAL };
@@ -59,6 +60,7 @@ struct PeInfo
     uint16_t machine = 0, subsystem = 0, dllChars = 0;
     uint32_t timestamp = 0, entryRva = 0, sizeOfHeaders = 0, checksum = 0;
     uint64_t imageBase = 0;
+    size_t fileSize = 0;        // смещения из заголовков проверяются по реальному размеру файла
     string linker;
     size_t overlay = 0;
     DataDir dirs[16];
