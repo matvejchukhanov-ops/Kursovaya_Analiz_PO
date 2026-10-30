@@ -3,12 +3,14 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
 
 using namespace std;
+namespace fs = std::filesystem;
 
 const size_t MIN_LENGTH = 4;          // минимальная длина строки, как у strings.exe
 const size_t MAX_EXAMPLES = 3;        // сколько строк-примеров показывать в находке
@@ -205,3 +207,9 @@ string hexVa(uint64_t v);
 string hexNum(uint64_t v);
 string hexPlain(uint64_t v);
 string severityName(Severity s);
+
+// Внутри программы текст хранится в UTF-8, пути — в fs::path (UTF-16): так работают имена с кириллицей
+string toUtf8(const wstring& w);
+wstring fromUtf8(const string& s);
+fs::path pathFromUtf8(const string& s);
+string pathToUtf8(const fs::path& p);

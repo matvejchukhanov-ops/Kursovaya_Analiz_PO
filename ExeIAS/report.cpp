@@ -320,7 +320,30 @@ void writeFsBlock(ofstream& out, const Analysis& a)
         out << "  нет\n\n";
 }
 
-void writeReport(const string& path, const Analysis& a)
+vector<string> collectIocs(const Analysis& a)
+{
+    vector<string> iocs;
+    if (a.overall < HIGH)
+        return iocs;
+    iocs.push_back("SHA-256 " + a.sha256);
+    for (const Behavior& b : a.behaviors)
+        for (const string& i : b.iocs)
+            addUnique(iocs, i);
+    for (const Finding& f : a.findings)
+        if (f.signature == "Файл в корне диска")
+            for (const string& e : f.examples)
+            {
+                bool known = false;
+                for (const string& i : iocs)
+                    if (i.find("\"" + e + "\"") != NPOS)
+                        known = true;
+                if (!known)
+                    iocs.push_back("файл \"" + e + "\"");
+            }
+    return iocs;
+}
+
+void writeReport(const fs::path& path, const Analysis& a)
 {
     ofstream out(path, ios::binary);
     out << "\xEF\xBB\xBF";   // UTF-8 BOM, чтобы Блокнот и Word показали кириллицу
@@ -431,26 +454,7 @@ void writeReport(const string& path, const Analysis& a)
     if (recs.empty())
         out << "Специальных мер не требуется\n";
 
-    // Индикаторы для блокировки и поиска: хэш, созданные файлы, автозапуск, мьютекс
-    vector<string> iocs;
-    if (a.overall >= HIGH)
-    {
-        iocs.push_back("SHA-256 " + a.sha256);
-        for (const Behavior& b : a.behaviors)
-            for (const string& i : b.iocs)
-                addUnique(iocs, i);
-        for (const Finding& f : a.findings)
-            if (f.signature == "Файл в корне диска")
-                for (const string& e : f.examples)
-                {
-                    bool known = false;
-                    for (const string& i : iocs)
-                        if (i.find("\"" + e + "\"") != NPOS)
-                            known = true;
-                    if (!known)
-                        iocs.push_back("файл \"" + e + "\"");
-                }
-    }
+    vector<string> iocs = collectIocs(a);
     if (!iocs.empty())
     {
         out << "\nИндикаторы для блокировки и поиска на других узлах:\n";
@@ -459,7 +463,7 @@ void writeReport(const string& path, const Analysis& a)
     }
 }
 
-bool writeCsv(const string& path, const vector<Finding>& findings)
+bool writeCsv(const fs::path& path, const vector<Finding>& findings)
 {
     ofstream csv(path, ios::binary);
     if (!csv.is_open())

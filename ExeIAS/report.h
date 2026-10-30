@@ -6,5 +6,8 @@
 // Балл риска 0–100, вероятность инцидента ИБ, общий уровень и вывод
 void assessRisk(Analysis& a);
 
-void writeReport(const string& path, const Analysis& a);
-bool writeCsv(const string& path, const vector<Finding>& findings);
+// Индикаторы для блокировки и поиска на других узлах (хэш, файлы, автозапуск, мьютекс)
+vector<string> collectIocs(const Analysis& a);
+
+void writeReport(const fs::path& path, const Analysis& a);
+bool writeCsv(const fs::path& path, const vector<Finding>& findings);

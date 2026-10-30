@@ -12,20 +12,24 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="common.cpp"><Filter>Исходные файлы</Filter></ClCompile>
+    <ClCompile Include="console.cpp"><Filter>Исходные файлы</Filter></ClCompile>
     <ClCompile Include="disasm.cpp"><Filter>Исходные файлы</Filter></ClCompile>
     <ClCompile Include="fsanalysis.cpp"><Filter>Исходные файлы</Filter></ClCompile>
     <ClCompile Include="input.cpp"><Filter>Исходные файлы</Filter></ClCompile>
     <ClCompile Include="main.cpp"><Filter>Исходные файлы</Filter></ClCompile>
     <ClCompile Include="pe.cpp"><Filter>Исходные файлы</Filter></ClCompile>
+    <ClCompile Include="pipeline.cpp"><Filter>Исходные файлы</Filter></ClCompile>
     <ClCompile Include="report.cpp"><Filter>Исходные файлы</Filter></ClCompile>
     <ClCompile Include="signatures.cpp"><Filter>Исходные файлы</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h"><Filter>Файлы заголовков</Filter></ClInclude>
+    <ClInclude Include="console.h"><Filter>Файлы заголовков</Filter></ClInclude>
     <ClInclude Include="disasm.h"><Filter>Файлы заголовков</Filter></ClInclude>
     <ClInclude Include="fsanalysis.h"><Filter>Файлы заголовков</Filter></ClInclude>
     <ClInclude Include="input.h"><Filter>Файлы заголовков</Filter></ClInclude>
     <ClInclude Include="pe.h"><Filter>Файлы заголовков</Filter></ClInclude>
+    <ClInclude Include="pipeline.h"><Filter>Файлы заголовков</Filter></ClInclude>
     <ClInclude Include="report.h"><Filter>Файлы заголовков</Filter></ClInclude>
     <ClInclude Include="signatures.h"><Filter>Файлы заголовков</Filter></ClInclude>
   </ItemGroup>

@@ -1,3 +1,10 @@
+// windows.h — до common.h: там using namespace std, а в SDK есть свой тип byte
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "common.h"
 
 #include <iomanip>
@@ -57,4 +64,42 @@ string severityName(Severity s)
     case LOW:      return "LOW";
     default:       return "-";
     }
+}
+
+string toUtf8(const wstring& w)
+{
+#ifdef _WIN32
+    if (w.empty())
+        return "";
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    string s(n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+    return s;
+#else
+    return string(w.begin(), w.end());
+#endif
+}
+
+wstring fromUtf8(const string& s)
+{
+#ifdef _WIN32
+    if (s.empty())
+        return L"";
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    wstring w(n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+    return w;
+#else
+    return wstring(s.begin(), s.end());
+#endif
+}
+
+fs::path pathFromUtf8(const string& s)
+{
+    return fs::path(fromUtf8(s));
+}
+
+string pathToUtf8(const fs::path& p)
+{
+    return toUtf8(p.wstring());
 }

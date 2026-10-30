@@ -12,49 +12,39 @@
 #include "input.h"
 
 #include <cstdio>
-#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <sstream>
 
-namespace fs = std::filesystem;
+const size_t MAX_INPUT = 256u * 1024 * 1024;   // больше не читаем: защита от «архивной бомбы»
 
-bool readInput(const string& path, vector<unsigned char>& bytes, string& error)
+bool readFile(const fs::path& path, vector<unsigned char>& bytes, string& error)
 {
-    if (path == "-")
+    error_code ec;
+    if (!fs::exists(path, ec) || fs::is_directory(path, ec))
     {
-#ifdef _WIN32
-        _setmode(_fileno(stdin), _O_BINARY);
-#endif
-        bytes.assign(istreambuf_iterator<char>(cin), istreambuf_iterator<char>());
+        error = "файл не существует: " + pathToUtf8(path);
+        return false;
     }
-    else
+#ifdef _WIN32
+    // 32-битная сборка иначе вместо System32 молча прочитает файл из SysWOW64
+    PVOID redirection = nullptr;
+    BOOL redirected = Wow64DisableWow64FsRedirection(&redirection);
+#endif
+    ifstream in(path, ios::binary);
+    if (in.is_open())
+        bytes.assign(istreambuf_iterator<char>(in), istreambuf_iterator<char>());
+#ifdef _WIN32
+    if (redirected)
+        Wow64RevertWow64FsRedirection(redirection);
+#endif
+    if (!in.is_open())
     {
-        error_code ec;
-        if (!fs::exists(path, ec) || fs::is_directory(path, ec))
-        {
-            error = "файл не существует: " + path;
-            return false;
-        }
-#ifdef _WIN32
-        // 32-битная сборка иначе вместо System32 молча прочитает файл из SysWOW64
-        PVOID redirection = nullptr;
-        BOOL redirected = Wow64DisableWow64FsRedirection(&redirection);
-#endif
-        ifstream in(path, ios::binary);
-        if (in.is_open())
-            bytes.assign(istreambuf_iterator<char>(in), istreambuf_iterator<char>());
-#ifdef _WIN32
-        if (redirected)
-            Wow64RevertWow64FsRedirection(redirection);
-#endif
-        if (!in.is_open())
-        {
-            error = "не удалось прочитать " + path + " (нет доступа или файл заблокирован антивирусом; используйте режим «-»)";
-            return false;
-        }
+        error = "не удалось прочитать " + pathToUtf8(path)
+              + " (нет доступа или файл заблокирован антивирусом; образец ВПО проверяйте из архива)";
+        return false;
     }
     if (bytes.empty())
     {
@@ -62,6 +52,187 @@ bool readInput(const string& path, vector<unsigned char>& bytes, string& error)
         return false;
     }
     return true;
+}
+
+bool readStdin(vector<unsigned char>& bytes, string& error)
+{
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+#endif
+    bytes.assign(istreambuf_iterator<char>(cin), istreambuf_iterator<char>());
+    if (bytes.empty())
+    {
+        error = "стандартный ввод пуст";
+        return false;
+    }
+    return true;
+}
+
+#ifdef _WIN32
+// Аргумент командной строки по правилам CommandLineToArgvW: кавычки и обратные косые перед ними
+wstring quoteArg(const wstring& arg)
+{
+    wstring out = L"\"";
+    size_t slashes = 0;
+    for (wchar_t c : arg)
+    {
+        if (c == L'\\')
+            slashes++;
+        else
+        {
+            if (c == L'"')
+                out.append(slashes + 1, L'\\');
+            slashes = 0;
+        }
+        out += c;
+    }
+    out.append(slashes, L'\\');
+    return out + L"\"";
+}
+
+// Запуск программы напрямую (без cmd.exe) с чтением её вывода.
+// Имя файла из архива не может превратиться в команду оболочки
+bool runProcess(const fs::path& exe, const vector<wstring>& args, vector<unsigned char>& output, DWORD& exitCode)
+{
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
+    HANDLE readPipe = nullptr, writePipe = nullptr;
+    if (!CreatePipe(&readPipe, &writePipe, &sa, 0))
+        return false;
+    SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                             OPEN_EXISTING, 0, nullptr);
+
+    wstring cmd = quoteArg(exe.wstring());
+    for (const wstring& a : args)
+        cmd += L" " + quoteArg(a);
+
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = nul;
+    si.hStdOutput = writePipe;
+    si.hStdError = nul;
+    PROCESS_INFORMATION pi = {};
+    BOOL ok = CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    CloseHandle(writePipe);
+    if (nul != INVALID_HANDLE_VALUE)
+        CloseHandle(nul);
+    if (!ok)
+    {
+        CloseHandle(readPipe);
+        return false;
+    }
+
+    char buf[65536];
+    DWORD n = 0;
+    while (ReadFile(readPipe, buf, sizeof(buf), &n, nullptr) && n > 0)
+    {
+        output.insert(output.end(), buf, buf + n);
+        if (output.size() > MAX_INPUT)
+        {
+            TerminateProcess(pi.hProcess, 1);
+            break;
+        }
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(readPipe);
+    return true;
+}
+
+// Системный tar.exe (bsdtar, есть в Windows 10 1803+), строго из System32
+fs::path systemTar()
+{
+    wchar_t dir[MAX_PATH];
+    UINT n = GetSystemDirectoryW(dir, MAX_PATH);
+    return n ? fs::path(wstring(dir, n)) / L"tar.exe" : fs::path();
+}
+
+string ansiToUtf8(const string& s)
+{
+    int n = MultiByteToWideChar(CP_ACP, 0, s.data(), (int)s.size(), nullptr, 0);
+    wstring w(n, L'\0');
+    MultiByteToWideChar(CP_ACP, 0, s.data(), (int)s.size(), w.data(), n);
+    return toUtf8(w);
+}
+#endif
+
+bool isArchive(const fs::path& path)
+{
+    string ext = toLower(pathToUtf8(path.extension()));
+    return ext == ".rar" || ext == ".zip" || ext == ".7z" || ext == ".tar" || ext == ".gz";
+}
+
+vector<string> listArchive(const fs::path& archive, string& error)
+{
+    vector<string> names;
+#ifdef _WIN32
+    fs::path tar = systemTar();
+    error_code ec;
+    if (tar.empty() || !fs::exists(tar, ec))
+    {
+        error = "не найден системный tar.exe (нужна Windows 10 1803 или новее)";
+        return names;
+    }
+    vector<unsigned char> out;
+    DWORD code = 1;
+    if (!runProcess(tar, { L"-tf", archive.wstring() }, out, code) || code != 0)
+    {
+        error = "не удалось прочитать архив (возможно, он защищён паролем или повреждён)";
+        return names;
+    }
+    string line;
+    for (unsigned char c : out)
+    {
+        if (c == '\n')
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            if (!line.empty() && line.back() != '/')     // каталоги пропускаем
+                names.push_back(ansiToUtf8(line));
+            line.clear();
+        }
+        else
+            line += (char)c;
+    }
+    if (!line.empty() && line.back() != '/')
+        names.push_back(ansiToUtf8(line));
+    if (names.empty())
+        error = "архив пуст";
+#else
+    error = "чтение архивов поддерживается только в Windows";
+#endif
+    return names;
+}
+
+bool readFromArchive(const fs::path& archive, const string& member, vector<unsigned char>& bytes, string& error)
+{
+#ifdef _WIN32
+    // имя, начинающееся с «-», tar принял бы за ключ
+    if (member.empty() || member[0] == '-')
+    {
+        error = "недопустимое имя файла в архиве";
+        return false;
+    }
+    fs::path tar = systemTar();
+    DWORD code = 1;
+    if (!runProcess(tar, { L"-xOf", archive.wstring(), fromUtf8(member) }, bytes, code) || code != 0 || bytes.empty())
+    {
+        error = "не удалось извлечь «" + member + "» из архива";
+        return false;
+    }
+    if (bytes.size() > MAX_INPUT)
+    {
+        error = "файл в архиве больше 256 МБ";
+        return false;
+    }
+    return true;
+#else
+    error = "чтение архивов поддерживается только в Windows";
+    return false;
+#endif
 }
 
 string hashOf(const vector<unsigned char>& data, const wchar_t* algorithm)
@@ -149,43 +320,48 @@ vector<FoundString> extractStrings(const vector<unsigned char>& bytes, size_t mi
     return found;
 }
 
-string findStringsUtility(const string& selfPath)
+fs::path findStringsUtility(const fs::path& selfPath)
 {
 #ifdef _WIN32
-    fs::path dir = fs::path(selfPath).parent_path();
-    const char* names[] = { "strings64.exe", "strings.exe" };
-    for (const char* n : names)
+    fs::path dir = selfPath.parent_path();
+    const wchar_t* names[] = { L"strings64.exe", L"strings.exe" };
+    for (const wchar_t* n : names)
     {
         error_code ec;
         fs::path local = dir / n;
         if (!dir.empty() && fs::exists(local, ec))
-            return local.string();
-        char buf[MAX_PATH];
-        if (SearchPathA(nullptr, n, nullptr, MAX_PATH, buf, nullptr) > 0)
-            return buf;
+            return local;
+        wchar_t buf[MAX_PATH];
+        if (SearchPathW(nullptr, n, nullptr, MAX_PATH, buf, nullptr) > 0)
+            return fs::path(buf);
     }
 #endif
-    return "";
+    return fs::path();
 }
 
-vector<string> runStringsUtility(const string& utility, const string& target)
+vector<string> runStringsUtility(const fs::path& utility, const fs::path& target)
 {
     vector<string> lines;
 #ifdef _WIN32
-    // cmd /c снимает внешние кавычки, поэтому вся команда берётся в ещё одни
-    string command = "\"\"" + utility + "\" -accepteula -nobanner -n 4 \"" + target + "\" 2>nul\"";
-    FILE* pipe = _popen(command.c_str(), "r");
-    if (!pipe)
+    vector<unsigned char> out;
+    DWORD code = 1;
+    if (!runProcess(utility, { L"-accepteula", L"-nobanner", L"-n", L"4", target.wstring() }, out, code) || code != 0)
         return lines;
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), pipe))
+    string line;
+    for (unsigned char c : out)
     {
-        string line = buf;
-        while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
-            line.pop_back();
-        lines.push_back(line);
+        if (c == '\n')
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            lines.push_back(line);
+            line.clear();
+        }
+        else
+            line += (char)c;
     }
-    _pclose(pipe);
+    if (!line.empty())
+        lines.push_back(line);
 #endif
     return lines;
 }
