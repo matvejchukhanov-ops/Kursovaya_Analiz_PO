@@ -210,10 +210,19 @@ vector<string> listArchive(const fs::path& archive, string& error)
 bool readFromArchive(const fs::path& archive, const string& member, vector<unsigned char>& bytes, string& error)
 {
 #ifdef _WIN32
-    // имя, начинающееся с «-», tar принял бы за ключ
-    if (member.empty() || member[0] == '-')
+    // имя, начинающееся с «-», tar принял бы за ключ, а * ? [ ] \ — за шаблон: тогда в поток
+    // попало бы содержимое нескольких файлов, и анализировался бы не тот файл, что указан в отчёте
+    if (member.empty() || member[0] == '-' || member.find_first_of("*?[]\\") != NPOS)
     {
-        error = "недопустимое имя файла в архиве";
+        error = "недопустимое имя файла в архиве «" + member + "» (символы шаблона); перепакуйте архив";
+        return false;
+    }
+    // по той же причине имя должно встречаться в архиве ровно один раз
+    vector<string> names = listArchive(archive, error);
+    if (count(names.begin(), names.end(), member) != 1)
+    {
+        if (error.empty())
+            error = "файл «" + member + "» не найден в архиве или встречается в нём несколько раз";
         return false;
     }
     fs::path tar = systemTar();
@@ -320,21 +329,45 @@ vector<FoundString> extractStrings(const vector<unsigned char>& bytes, size_t mi
     return found;
 }
 
-fs::path findStringsUtility(const fs::path& selfPath)
+// strings.exe ищется рядом с ExeIAS.exe и в абсолютных каталогах PATH. Текущая папка и папка
+// с образцом исключены: иначе подложенный рядом с образцом strings.exe был бы запущен
+fs::path findStringsUtility(const fs::path& selfPath, const fs::path& samplePath)
 {
 #ifdef _WIN32
-    fs::path dir = selfPath.parent_path();
-    const wchar_t* names[] = { L"strings64.exe", L"strings.exe" };
-    for (const wchar_t* n : names)
+    vector<fs::path> dirs;
+    if (!selfPath.empty())
+        dirs.push_back(selfPath.parent_path());
+    error_code ec;
+    fs::path current = fs::weakly_canonical(fs::current_path(ec), ec);
+    fs::path sampleDir = samplePath.empty() ? fs::path() : fs::weakly_canonical(fs::absolute(samplePath, ec).parent_path(), ec);
+    DWORD length = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+    if (length > 0)
     {
-        error_code ec;
-        fs::path local = dir / n;
-        if (!dir.empty() && fs::exists(local, ec))
-            return local;
-        wchar_t buf[MAX_PATH];
-        if (SearchPathW(nullptr, n, nullptr, MAX_PATH, buf, nullptr) > 0)
-            return fs::path(buf);
+        wstring list(length, L'\0');
+        list.resize(GetEnvironmentVariableW(L"PATH", list.data(), length));
+        size_t start = 0;
+        while (start <= list.size())
+        {
+            size_t end = list.find(L';', start);
+            wstring item = list.substr(start, end == wstring::npos ? wstring::npos : end - start);
+            start = end == wstring::npos ? list.size() + 1 : end + 1;
+            fs::path dir(item);
+            if (item.empty() || !dir.is_absolute())
+                continue;
+            fs::path canon = fs::weakly_canonical(dir, ec);
+            if (canon == current || (!sampleDir.empty() && canon == sampleDir))
+                continue;
+            dirs.push_back(dir);
+        }
     }
+    const wchar_t* names[] = { L"strings64.exe", L"strings.exe" };
+    for (const fs::path& dir : dirs)
+        for (const wchar_t* n : names)
+        {
+            fs::path candidate = dir / n;
+            if (fs::is_regular_file(candidate, ec))
+                return candidate;
+        }
 #endif
     return fs::path();
 }

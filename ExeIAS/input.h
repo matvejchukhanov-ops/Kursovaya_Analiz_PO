@@ -20,8 +20,9 @@ string hashOf(const vector<unsigned char>& data, const wchar_t* algorithm);
 // ASCII- и UTF-16LE-строки вместе со смещением (аналог strings.exe, ПР №3)
 vector<FoundString> extractStrings(const vector<unsigned char>& bytes, size_t minLength);
 
-// Внешняя утилита strings.exe (Sysinternals): путь или пустой путь, если не найдена
-fs::path findStringsUtility(const fs::path& selfPath);
+// Внешняя утилита strings.exe (Sysinternals): путь или пустой путь, если не найдена.
+// Текущая папка и папка с образцом не просматриваются
+fs::path findStringsUtility(const fs::path& selfPath, const fs::path& samplePath);
 vector<string> runStringsUtility(const fs::path& utility, const fs::path& target);
 
 // Нормализация: чистка непечатаемых символов, отсев мусора, удаление повторов

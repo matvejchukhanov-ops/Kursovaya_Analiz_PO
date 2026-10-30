@@ -31,7 +31,7 @@ void runAnalysis(const vector<unsigned char>& bytes, const RunOptions& options, 
     a.pe = parsePe(bytes);
     vector<FoundString> found = extractStrings(bytes, MIN_LENGTH);
     vector<string> raw;
-    fs::path utility = options.internalOnly || options.sourcePath.empty() ? fs::path() : findStringsUtility(options.selfPath);
+    fs::path utility = options.internalOnly || options.sourcePath.empty() ? fs::path() : findStringsUtility(options.selfPath, options.sourcePath);
     if (!utility.empty())
         raw = runStringsUtility(utility, options.sourcePath);
     if (!raw.empty())
