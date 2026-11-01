@@ -23,24 +23,30 @@ const size_t MAX_INPUT = 256u * 1024 * 1024;   // больше не читаем
 
 bool readFile(const fs::path& path, vector<unsigned char>& bytes, string& error)
 {
-    error_code ec;
-    if (!fs::exists(path, ec) || fs::is_directory(path, ec))
-    {
-        error = "файл не существует: " + pathToUtf8(path);
-        return false;
-    }
 #ifdef _WIN32
-    // 32-битная сборка иначе вместо System32 молча прочитает файл из SysWOW64
+    // 32-битная сборка иначе вместо System32 молча прочитает файл из SysWOW64,
+    // а файл, который есть только в System32, сочтёт несуществующим
     PVOID redirection = nullptr;
     BOOL redirected = Wow64DisableWow64FsRedirection(&redirection);
 #endif
-    ifstream in(path, ios::binary);
-    if (in.is_open())
-        bytes.assign(istreambuf_iterator<char>(in), istreambuf_iterator<char>());
+    error_code ec;
+    bool found = fs::exists(path, ec) && !fs::is_directory(path, ec);
+    ifstream in;
+    if (found)
+    {
+        in.open(path, ios::binary);
+        if (in.is_open())
+            bytes.assign(istreambuf_iterator<char>(in), istreambuf_iterator<char>());
+    }
 #ifdef _WIN32
     if (redirected)
         Wow64RevertWow64FsRedirection(redirection);
 #endif
+    if (!found)
+    {
+        error = "файл не существует: " + pathToUtf8(path);
+        return false;
+    }
     if (!in.is_open())
     {
         error = "не удалось прочитать " + pathToUtf8(path)
