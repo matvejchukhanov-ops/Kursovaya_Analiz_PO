@@ -218,12 +218,19 @@ struct EconomicProfile
     string source = "значения по умолчанию";
 };
 
+struct EconomicLine
+{
+    string name;
+    double lo = 0, hi = 0, expected = 0;
+};
+
 // Итоговая экономическая оценка: по каждому виду ущерба берётся наихудшая находка
 struct EconomicSummary
 {
     double lossMin = 0, lossMax = 0, lossExpected = 0;
     string level = "нет";
     vector<string> breakdown;
+    vector<EconomicLine> lines;
 };
 
 struct Library

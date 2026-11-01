@@ -178,6 +178,7 @@ void assessEconomics(Analysis& a)
         a.economy.lossMin += l.lo;
         a.economy.lossMax += l.hi;
         a.economy.lossExpected += l.expected;
+        a.economy.lines.push_back({ DAMAGE_NAMES[kind], l.lo, l.hi, l.expected });
         a.economy.breakdown.push_back(string(DAMAGE_NAMES[kind]) + ": от " + formatRub(l.lo) + " до " + formatRub(l.hi)
                                       + ", ожидаемо " + formatRub(l.expected));
     }

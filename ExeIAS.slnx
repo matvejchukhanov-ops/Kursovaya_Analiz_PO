@@ -4,4 +4,5 @@
     <Platform Name="x86" />
   </Configurations>
   <Project Path="ExeIAS/ExeIAS.vcxproj" Id="ace83d60-43a1-402f-b450-0cb4e7d3964c" />
+  <Project Path="ExeIAS/gui/ExeIAS_GUI.vcxproj" Id="5d2f8a41-7c3e-4b19-9e60-2a7c1f4d8b35" />
 </Solution>
